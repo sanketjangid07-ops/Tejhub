@@ -1,0 +1,369 @@
+// src/App.jsx
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  signInAnonymously,
+  onAuthStateChanged,
+  signInWithCustomToken
+} from 'firebase/auth';
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  query,
+  onSnapshot,
+  orderBy,
+  deleteDoc,
+  doc,
+  serverTimestamp
+} from 'firebase/firestore';
+import {
+  Car,
+  Plus,
+  FileText,
+  Share2,
+  Trash2,
+  PieChart,
+  Users,
+  Wallet,
+  LogOut,
+  Upload,
+  CheckCircle,
+  X
+} from 'lucide-react';
+
+// ---------------- FIREBASE CONFIG ----------------
+// Option A (recommended): use environment variables (build-time).
+const firebaseConfig = {
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "YOUR_API_KEY",
+  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "YOUR_AUTH_DOMAIN",
+  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "YOUR_PROJECT_ID",
+  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "YOUR_STORAGE_BUCKET",
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || "YOUR_SENDER_ID",
+  appId: process.env.REACT_APP_FIREBASE_APP_ID || "YOUR_APP_ID"
+};
+
+// If you prefer quick inline config (not recommended for versioned public repos),
+// replace the object above with your actual keys directly.
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// simple app id (used only for namespacing if you want)
+const appId = "tejhub-app";
+
+// -------------- UTILITIES ----------------
+const formatCurrency = (amount) => {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 0
+  }).format(amount || 0);
+};
+
+const formatDate = (value) => {
+  if (!value) return '';
+  // value could be a Firestore timestamp or a date string from the form
+  if (value.seconds) { // Firestore Timestamp
+    return new Date(value.seconds * 1000).toLocaleDateString('en-IN', {
+      day: 'numeric', month: 'short', year: 'numeric'
+    });
+  }
+  return new Date(value).toLocaleDateString('en-IN', {
+    day: 'numeric', month: 'short', year: 'numeric'
+  });
+};
+
+// ---------------- COMPONENTS (kept same, trimmed) ----------------
+// -- LoginScreen, InvoiceModal -- use the same UI code as you had earlier.
+// For brevity, I'm only including the core App logic and minimal UI to deploy.
+
+const LoginScreen = ({ onLogin }) => (
+  <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+    <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm border border-slate-700 text-center">
+      <div className="w-20 h-20 bg-amber-500 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg shadow-amber-500/20">
+        <Car size={40} className="text-slate-900" />
+      </div>
+      <h1 className="text-3xl font-bold text-white mb-2 tracking-wide">TejHub</h1>
+      <p className="text-slate-400 mb-8">Premium Fleet Management</p>
+      <div className="space-y-4">
+        <button onClick={() => onLogin('Partner 1')} className="w-full bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl font-medium transition-all border border-slate-600 flex items-center justify-center gap-2">
+          <Users size={18} /> Partner 1 Login
+        </button>
+        <button onClick={() => onLogin('Partner 2')} className="w-full bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl font-medium transition-all border border-slate-600 flex items-center justify-center gap-2">
+          <Users size={18} /> Partner 2 Login
+        </button>
+        <button onClick={() => onLogin('Partner 3')} className="w-full bg-amber-500 hover:bg-amber-600 text-slate-900 py-3 rounded-xl font-bold transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2">
+          <Users size={18} /> Admin / Manager
+        </button>
+      </div>
+      <p className="mt-8 text-xs text-slate-500">Secure Cloud Environment v1.0</p>
+    </div>
+  </div>
+);
+
+// Minimal InvoiceModal (use your full version if you want)
+const InvoiceModal = ({ booking, onClose }) => {
+  if (!booking) return null;
+  const printInvoice = () => {
+    const printWindow = window.open('', '', 'height=600,width=800');
+    printWindow.document.write('<html><head><title>Invoice</title></head><body>');
+    printWindow.document.write(`<pre>${JSON.stringify(booking, null, 2)}</pre>`);
+    printWindow.document.close();
+    printWindow.print();
+  };
+  const shareWhatsApp = () => {
+    const text = `TejHub Invoice\n${booking.customerName}\n${booking.pickup} -> ${booking.drop}\nAmount: ₹${booking.amount}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  };
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+      <div className="bg-white w-full max-w-md rounded-xl overflow-hidden">
+        <div className="p-6">
+          <h2 className="text-xl font-bold">Invoice</h2>
+          <p>{booking.customerName} — ₹{booking.amount}</p>
+          <div className="mt-4 flex gap-2">
+            <button onClick={shareWhatsApp} className="bg-green-500 text-white px-3 py-2 rounded">WhatsApp</button>
+            <button onClick={printInvoice} className="bg-slate-900 text-white px-3 py-2 rounded">Print</button>
+            <button onClick={onClose} className="px-3 py-2 rounded border">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ------------------ MAIN APP ------------------
+export default function TejHubApp() {
+  const [user, setUser] = useState(null);
+  const [currentUserLabel, setCurrentUserLabel] = useState('');
+  const [bookings, setBookings] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showBookingForm, setShowBookingForm] = useState(false);
+  const [showExpenseForm, setShowExpenseForm] = useState(false);
+  const [selectedBooking, setSelectedBooking] = useState(null);
+
+  const [newBooking, setNewBooking] = useState({ customerName: '', pickup: '', drop: '', amount: '', date: '', carModel: 'Dzire' });
+  const [newExpense, setNewExpense] = useState({ title: '', amount: '', category: 'Fuel', date: '' });
+
+  // AUTH
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        // If you have a custom token system, use signInWithCustomToken
+        // else anonymous is fine.
+        await signInAnonymously(auth);
+      } catch (err) {
+        console.error("Auth init error:", err);
+      }
+    };
+    initAuth();
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) setCurrentUserLabel('');
+    });
+    return () => unsub();
+  }, []);
+
+  // DATA SYNC (simple collections: 'bookings' and 'expenses')
+  useEffect(() => {
+    if (!user) return;
+    const bookingsRef = collection(db, 'bookings');
+    const expensesRef = collection(db, 'expenses');
+
+    const unsubBookings = onSnapshot(query(bookingsRef, orderBy('createdAt', 'desc')), (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setBookings(data);
+      setLoading(false);
+    }, (err) => console.error("bookings snapshot error:", err));
+
+    const unsubExpenses = onSnapshot(query(expensesRef, orderBy('createdAt', 'desc')), (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setExpenses(data);
+    }, (err) => console.error("expenses snapshot error:", err));
+
+    return () => {
+      unsubBookings(); unsubExpenses();
+    };
+  }, [user]);
+
+  const handleLogin = (label) => setCurrentUserLabel(label);
+
+  const handleAddBooking = async (e) => {
+    e.preventDefault();
+    if (!newBooking.amount || !newBooking.customerName) return;
+    try {
+      await addDoc(collection(db, 'bookings'), {
+        ...newBooking,
+        amount: parseFloat(newBooking.amount),
+        createdAt: serverTimestamp(),
+        createdBy: currentUserLabel
+      });
+      setShowBookingForm(false);
+      setNewBooking({ customerName: '', pickup: '', drop: '', amount: '', date: '', carModel: 'Dzire' });
+    } catch (err) { console.error("add booking error:", err); }
+  };
+
+  const handleAddExpense = async (e) => {
+    e.preventDefault();
+    if (!newExpense.amount || !newExpense.title) return;
+    try {
+      await addDoc(collection(db, 'expenses'), {
+        ...newExpense,
+        amount: parseFloat(newExpense.amount),
+        createdAt: serverTimestamp(),
+        createdBy: currentUserLabel
+      });
+      setShowExpenseForm(false);
+      setNewExpense({ title: '', amount: '', category: 'Fuel', date: '' });
+    } catch (err) { console.error("add expense error:", err); }
+  };
+
+  const deleteItem = async (col, id) => {
+    if (window.confirm('Are you sure?')) {
+      await deleteDoc(doc(db, col, id));
+    }
+  };
+
+  // calculations
+  const totalRevenue = bookings.reduce((s, b) => s + (b.amount || 0), 0);
+  const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const netProfit = totalRevenue - totalExpenses;
+  const partnerShare = netProfit / 3;
+
+  if (!currentUserLabel) return <LoginScreen onLogin={handleLogin} />;
+
+  return (
+    <div className="bg-slate-950 min-h-screen font-sans text-slate-200">
+      <div className="max-w-md mx-auto min-h-screen bg-slate-900 relative shadow-2xl overflow-hidden flex flex-col">
+        <div className="bg-slate-900/80 p-4 sticky top-0 z-30 flex justify-between items-center border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-amber-500 rounded-lg flex items-center justify-center shadow-lg shadow-amber-500/20">
+              <Car size={18} className="text-slate-900" />
+            </div>
+            <span className="font-bold text-xl tracking-tight text-white">TejHub</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400 bg-slate-800 px-2 py-1 rounded-full border border-slate-700">{currentUserLabel}</span>
+          </div>
+        </div>
+
+        <div className="flex-1 p-4 overflow-y-auto">
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-slate-800 p-5 rounded-2xl shadow-lg border border-slate-700">
+                <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Total Revenue</p>
+                <p className="text-2xl font-bold text-green-400">{formatCurrency(totalRevenue)}</p>
+              </div>
+              <div className="bg-slate-800 p-5 rounded-2xl shadow-lg border border-slate-700">
+                <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Expenses</p>
+                <p className="text-2xl font-bold text-red-400">{formatCurrency(totalExpenses)}</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+              <h3 className="text-white font-semibold mb-4 flex items-center gap-2"><CheckCircle size={16} className="text-amber-500" /> Recent Bookings</h3>
+              <div className="space-y-3">
+                {bookings.slice(0,3).map(b => (
+                  <div key={b.id} className="flex justify-between items-center text-sm border-b border-slate-700 pb-2 last:border-0">
+                    <div>
+                      <p className="text-slate-200 font-medium">{b.customerName}</p>
+                      <p className="text-slate-500 text-xs">{b.pickup} to {b.drop}</p>
+                    </div>
+                    <span className="text-green-400 font-medium">+{b.amount}</span>
+                  </div>
+                ))}
+                {bookings.length === 0 && <p className="text-slate-500 text-sm">No bookings yet.</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-slate-900 border-t border-slate-800 p-2 sticky bottom-0 z-30">
+          <div className="flex justify-around items-center">
+            <button className="flex flex-col items-center p-2 rounded-xl text-amber-500">
+              <PieChart size={24} /><span className="text-[10px] mt-1">Home</span>
+            </button>
+            <button onClick={() => setShowBookingForm(true)} className="flex flex-col items-center p-2 rounded-xl text-slate-500 hover:text-slate-300">
+              <Car size={24} /><span className="text-[10px] mt-1">Trips</span>
+            </button>
+            <button onClick={() => setShowExpenseForm(true)} className="flex flex-col items-center p-2 rounded-xl text-slate-500 hover:text-slate-300">
+              <Wallet size={24} /><span className="text-[10px] mt-1">Bills</span>
+            </button>
+            <button onClick={() => setCurrentUserLabel('')} className="flex flex-col items-center p-2 rounded-xl text-slate-500 hover:text-slate-300">
+              <LogOut size={24} /><span className="text-[10px] mt-1">Logout</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Booking Modal (simple) */}
+        {showBookingForm && (
+          <div className="fixed inset-0 bg-black/80 z-50 flex items-end sm:items-center justify-center p-4">
+            <div className="bg-slate-800 w-full max-w-md rounded-t-2xl sm:rounded-2xl p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold text-white">New Trip</h3>
+                <button onClick={() => setShowBookingForm(false)} className="text-slate-400"><X size={24}/></button>
+              </div>
+              <form onSubmit={handleAddBooking} className="space-y-4">
+                <input type="text" placeholder="Customer Name" required className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" value={newBooking.customerName} onChange={e => setNewBooking({...newBooking, customerName: e.target.value})} />
+                <div className="grid grid-cols-2 gap-3">
+                  <input type="date" required className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" value={newBooking.date} onChange={e => setNewBooking({...newBooking, date: e.target.value})} />
+                  <select className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" value={newBooking.carModel} onChange={e => setNewBooking({...newBooking, carModel: e.target.value})}>
+                    <option>Dzire</option>
+                    <option>Innova</option>
+                    <option>Ertiga</option>
+                    <option>Tempo</option>
+                  </select>
+                </div>
+                <input type="text" placeholder="Pickup Location" required className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" value={newBooking.pickup} onChange={e => setNewBooking({...newBooking, pickup: e.target.value})} />
+                <input type="text" placeholder="Drop Location" required className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" value={newBooking.drop} onChange={e => setNewBooking({...newBooking, drop: e.target.value})} />
+                <div className="relative">
+                  <span className="absolute left-3 top-3 text-slate-500">₹</span>
+                  <input type="number" placeholder="Amount" required className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 pl-8 text-white" value={newBooking.amount} onChange={e => setNewBooking({...newBooking, amount: e.target.value})} />
+                </div>
+                <button type="submit" className="w-full bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold py-3 rounded-xl">Save Trip</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Expense Modal (simple) */}
+        {showExpenseForm && (
+          <div className="fixed inset-0 bg-black/80 z-50 flex items-end sm:items-center justify-center p-4">
+            <div className="bg-slate-800 w-full max-w-md rounded-t-2xl sm:rounded-2xl p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold text-white">Add Expense</h3>
+                <button onClick={() => setShowExpenseForm(false)} className="text-slate-400"><X size={24}/></button>
+              </div>
+              <form onSubmit={handleAddExpense} className="space-y-4">
+                <select className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" value={newExpense.category} onChange={e => setNewExpense({...newExpense, category: e.target.value})}>
+                  <option>Fuel</option>
+                  <option>Maintenance</option>
+                  <option>Driver Salary</option>
+                  <option>Toll/Parking</option>
+                  <option>Office</option>
+                </select>
+                <input type="text" placeholder="Description (e.g. Petrol Full)" required className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" value={newExpense.title} onChange={e => setNewExpense({...newExpense, title: e.target.value})} />
+                <input type="date" required className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" value={newExpense.date} onChange={e => setNewExpense({...newExpense, date: e.target.value})} />
+                <div className="relative">
+                  <span className="absolute left-3 top-3 text-slate-500">₹</span>
+                  <input type="number" placeholder="Cost" required className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 pl-8 text-white" value={newExpense.amount} onChange={e => setNewExpense({...newExpense, amount: e.target.value})} />
+                </div>
+                <div className="border-2 border-dashed border-slate-600 rounded-xl p-4 flex flex-col items-center justify-center text-slate-400 gap-2 cursor-pointer">
+                  <Upload size={24} />
+                  <span className="text-xs">Tap to upload Bill Photo (Demo)</span>
+                </div>
+                <button type="submit" className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl">Add Expense</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {selectedBooking && <InvoiceModal booking={selectedBooking} onClose={() => setSelectedBooking(null)} />}
+      </div>
+    </div>
+  );
+}
